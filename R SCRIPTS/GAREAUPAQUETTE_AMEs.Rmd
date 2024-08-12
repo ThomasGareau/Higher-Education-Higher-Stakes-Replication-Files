@@ -1,0 +1,134 @@
+---
+title: "Untitled"
+author: "Thomas Gareau Paquette"
+date: "2024-05-22"
+output: html_document
+---
+
+```{r}
+# Load the data
+library(haven)
+library(tidyverse)
+library(modelsummary)
+library(nnet)
+library(stargazer)
+library(marginaleffects)
+library(stringr)
+```
+
+```{r}
+df <- read_dta("ces2019_analyses.dta")
+```
+
+
+
+
+```{r}
+df$deservingness <- as_factor(df$deservingness)
+```
+
+
+```{r}
+df <- df %>%
+    mutate(education = as_factor(education)) #%>%
+ #   mutate(education = as.character(education))
+```
+
+
+```{r}
+df <- df %>%
+    mutate(urban_rural = as_factor(urban_rural))
+
+df <- df %>%
+    mutate(agegroup = as_factor(agegroup))
+
+df <- df %>%
+    mutate(language = as_factor(language))
+
+df <- df %>%
+    mutate(region = as_factor(region))
+```
+
+
+
+```{r}
+df <- df %>%
+    mutate(vote_19_factor = ifelse(vote_19_factor == "Conservative", "CPC", vote_19_factor),
+           vote_19_factor = ifelse(vote_19_factor == "Liberal", "LPC", vote_19_factor),
+           vote_19_factor = ifelse(vote_19_factor == "Bloc Quebecois", "BQ", vote_19_factor),
+           vote_19_factor = ifelse(vote_19_factor == "Green Party", "GPC", vote_19_factor),
+           vote_19_factor = ifelse(vote_19_factor == "People's Party", "PPC", vote_19_factor))
+           
+```
+
+```{r}
+library(forcats)
+
+df <- df %>%
+    mutate(vote_19_factor = fct_relevel(vote_19_factor, "LPC"))
+```
+
+
+```{r}
+# reg
+reg1 <- multinom(vote_19_factor ~ gender + minovis + education + urban_rural + agegroup + language + region, data = df, weights = weights)
+
+stargazer(reg1, type = "html", title = "Multinomial Logistic Regression Model", dep.var.caption = "Dependent Variable: Vote Choice", dep.var.labels = "Vote Choice",  notes = "Note: Standard errors in parentheses. *** p < 0.001, ** p < 0.01, * p < 0.05", out = "reg1.html")
+```
+
+
+```{r}
+# AMEs
+ame <- avg_slopes(reg1, by = TRUE, slope = "dydx")
+
+ame <- ame %>%
+    filter(term == "education")
+```
+
+```{r}
+# clean the "contrast" variable
+ame <- ame %>%
+  mutate(contrast = str_extract(contrast, ".*(?= - )"))
+```
+
+```{r}
+# Rename for plot
+ame <- ame %>%
+    mutate(term = ifelse(term == "welfare_state", "Welfare State", term),
+           term = ifelse(term == "deservingness", "Deservingness", term))
+
+
+# define colors for each party
+party_colors <- c("BQ" = "#09ABEA", 
+                  "CPC" = "#0A33EC", 
+                  "GPC" = "darkgreen", 
+                  "LPC" = "#D11313", 
+                  "NDP" = "#FF8D00", 
+                  "PPC" = "#7332a8")
+
+# Plotting with ggplot2
+ggplot(ame, aes(x = term, y = estimate, color = group)) +
+  geom_point(position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2, position = position_dodge(width = 0.5)) +
+  scale_color_manual(values = party_colors) +
+  labs(x = "", y = "Estimate", title = "", colour = "Party") +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "bottom") + geom_hline(yintercept = 0, linetype = "dashed", color = "black") + coord_flip()
+
+ggsave("ame_marketliberalism.png", width = 8, height = 6, dpi = 300)
+```
+
+
+```{r}
+kableExtra::kable(ame, digit = 3)
+```
+
+                  
+```{r}
+plot_predictions(reg1, condition = c("education", "group"), type = "probs") + theme_bw(base_size = 14)  + scale_color_manual(values = c(`BQ` = "#09ABEA", `LPC` = "#D11313", `GPC` = "darkgreen", `CPC` = "#0A33EC", `NDP` = "#FF8D00", `PPC` = "#7332a8")) + scale_fill_manual(values = c(`BQ` = "#09ABEA", `LPC` = "#D11313", `GPC` = "darkgreen", `CPC` = "#0A33EC", `NDP` = "#FF8D00", `PPC` = "#7332a8")) + ylab("Predicted Probability") + xlab("")   + labs(color = "", fill = " ") + coord_flip()
+```
+
+
+```{r}
+plot_slopes(reg1, by = "education") + theme_bw(base_size = 14)  + scale_color_manual(values = c(`BQ` = "#09ABEA", `LPC` = "#D11313", `GPC` = "darkgreen", `CPC` = "#0A33EC", `NDP` = "#FF8D00", `PPC` = "#7332a8")) + scale_fill_manual(values = c(`BQ` = "#09ABEA", `LPC` = "#D11313", `GPC` = "darkgreen", `CPC` = "#0A33EC", `NDP` = "#FF8D00", `PPC` = "#7332a8")) + ylab("Predicted Probability") + xlab("")   + labs(color = "", fill = "") + coord_flip() # Explicitly setting legend titles for color and fill
+```

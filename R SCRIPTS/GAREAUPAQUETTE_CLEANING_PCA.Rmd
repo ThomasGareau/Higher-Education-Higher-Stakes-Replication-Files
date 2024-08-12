@@ -1,0 +1,674 @@
+---
+title: "Data Cleaning and Basic Analyses"
+author: "Thomas Gareau-Paquette"
+date: "2024-03-07"
+output: html_document
+---
+
+```{r}
+library(haven)
+library(tidyverse)
+library(ggplot2)
+library(ggtext)
+library(plotly)
+library(labelled)
+library(survey)
+library(scales)
+library(fixest)
+library(broom)
+library(GGally)
+library(readxl)
+library(viridis)
+library(ggrepel)
+library(modelsummary)
+library(kableExtra)
+library(summarytools)
+library(psych)
+library(reshape2)
+```
+
+```{r}
+ces2019 <- read_dta("ces2019_online/2019 Canadian Election Study - Online Survey v1.0.dta")
+```
+
+
+
+## Province
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(region = ifelse(pes19_province == 4 | pes19_province == 5 | pes19_province == 7 | pes19_province == 10, "Atlantic", NA),
+           region = ifelse(pes19_province == 1 | pes19_province == 3 | pes19_province == 12, "Prairies", region),
+           region = ifelse(pes19_province == 11, "Quebec", region),
+           region = ifelse(pes19_province == 9, "Ontario", region),
+           region = ifelse(pes19_province == 2, "BC", region)) %>%
+    filter(!is.na(region))
+```
+
+
+# Controls
+
+## education (4 categories)
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(education = case_when(
+    cps19_education %in% 1:5 ~ "No Schooling/Completed High School",
+    cps19_education == 6 ~ "Some CEGEP/Post-Secondary",
+    cps19_education == 7 ~ "Completed CEGEP/Post-Secondary",
+    cps19_education == 8 ~ "Some University",
+    cps19_education == 9 ~ "Bachelor's Degree",
+    cps19_education == 10 ~ "Master's Degree/Doctorate",
+    cps19_education == 11 ~ "Master's Degree/Doctorate",
+    TRUE ~ NA_character_  # assign NA to values that do not fit the specified categories
+  )) %>%
+  filter(!is.na(education)) %>%
+    mutate(education = factor(education, levels = c("No Schooling/Completed High School", "Some CEGEP/Post-Secondary", "Completed CEGEP/Post-Secondary", "Some University", "Bachelor's Degree", "Master's Degree/Doctorate")))
+
+```
+
+
+## age
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(agegroup =  cps19_age,
+         agegroup = ifelse(cps19_age <= 35, "18-35", agegroup),
+         agegroup = ifelse(cps19_age >= 36 & cps19_age <= 45, "36-45", agegroup),
+         agegroup = ifelse(cps19_age >= 46 & cps19_age <= 55, "46-55", agegroup),
+         agegroup = ifelse(cps19_age >= 56 & cps19_age <= 65, "56-65", agegroup),
+         agegroup = ifelse(cps19_age > 65, "66 +", agegroup)) %>%
+    mutate(agegroup = factor(agegroup, levels = c("18-35", "36-45", "46-55", "56-65", "66 +")))
+```
+
+
+
+## Racial minority (ADDED 18/09/2023 `minovis`)
+
+```{r}
+# odd wording
+ces2019 <- ces2019 %>%
+  mutate(
+    minovis = case_when(
+      cps19_ethnicity_24 == 1 | cps19_ethnicity_26 == 1 | cps19_ethnicity_27 == 1 | 
+      cps19_ethnicity_28 == 1 | cps19_ethnicity_29 == 1 | cps19_ethnicity_30 == 1 | 
+      cps19_ethnicity_34 == 1 | cps19_ethnicity_35 == 1 | cps19_ethnicity_37 == 1 | 
+      cps19_ethnicity_38 == 1 | cps19_ethnicity_39 == 1 | cps19_ethnicity_40 == 1 ~ 0,
+      cps19_ethnicity_43 == 1 ~ NA_integer_,
+      TRUE ~ 1
+    )
+  )
+```
+
+
+## Gender
+
+```{r}
+ces2019 <- ces2019 %>%
+    filter(cps19_gender != 3) %>%
+    mutate(gender = ifelse(cps19_gender == 1, 0, 1))
+```
+
+
+## Religiosity (3 categories)
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(has_religion = ifelse(cps19_religion == 1, "No Religion", "Has Religion"))
+```
+
+## Religious Frequency
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(religious_freq = ifelse(pes19_service_freq == 1, "Never/Almost never", NA),
+           religious_freq = ifelse(pes19_service_freq == 2, "Never/Almost never", religious_freq),
+           religious_freq = ifelse(pes19_service_freq == 3, "Never/Almost never", religious_freq),
+           religious_freq = ifelse(pes19_service_freq == 4, "Once a month or more", religious_freq),
+           religious_freq = ifelse(pes19_service_freq == 5, "Once a month or more", religious_freq),
+           religious_freq = ifelse(pes19_service_freq == 6, "Once a month or more", religious_freq),
+           religious_freq = ifelse(pes19_service_freq == 7, "Never/Almost never", religious_freq))
+```
+
+
+
+
+## Urban/Rural Context
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(urban_rural = pes19_rural_urban) %>%
+  mutate(urban_rural = replace(urban_rural, urban_rural == 6, NA)) %>%
+  mutate(urban_rural = as_factor(urban_rural))
+```
+
+
+## Language
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(language = ifelse(!is.na(cps19_language_68), "English", "Other"),
+           language = ifelse(!is.na(cps19_language_69), "French", language)) %>%
+    mutate(language = factor(language, levels = c("English", "French", "Other")))
+```
+
+
+# Attitudes toward redistribution
+
+* pes19_govt_act_ineq: The government should take measures to reduce differences in income levels.	
+
+* Strongly disagree (1)
+* Somewhat disagree (2)
+* Neither agree nor disagree (3)
+* Somewhat agree (4)
+* Strongly agree (5)
+* Don't know/ Prefer not to answer (6)
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(govt_act_ineq = case_when(
+    pes19_govt_act_ineq == 6 ~ NA_real_, 
+    TRUE ~ (pes19_govt_act_ineq - 1) / 4 
+  ))
+
+```
+
+
+
+* pes19_inequal: Is income inequality a big problem in Canada?
+
+* Definitely yes (1)
+* Probably yes (2)
+* Not sure (3)
+* Probably not (4)
+* Definitely not (5)
+* Don't know/ Prefer not to answer (6)
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(inequal = case_when(
+    pes19_inequal == 6 ~ NA_real_, 
+    TRUE ~ (5 - pes19_inequal) / 4
+  ))
+```
+
+
+* pes19_stdofliving: The government should:
+
+* See to it that everyone has a decent standard of living (1)
+* Leave people to get ahead on their own (2)
+* Don't know/ Prefer not to answer (3)
+    
+```{r}
+# Directly recode the pes19_stdofliving variable
+ces2019 <- ces2019 %>%
+  mutate(stdofliving = case_when(
+    pes19_stdofliving == 1 ~ 1,
+    pes19_stdofliving == 2 ~ 0,
+    pes19_stdofliving == 3 ~ 0.5  # Assign 0.5 to "Don't know/Prefer not to answer"
+  ))
+```
+
+    
+* pes19_privjobs: The government should leave it entirely to the private sector to create jobs.
+
+* Strongly disagree (1)
+* Somewhat disagree (2)
+* Neither agree nor disagree (3)
+* Somewhat agree (4)
+* Strongly agree (5)
+* Don't know/ Prefer not to answer (6)
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(privjobs = case_when(
+    pes19_privjobs == 6 ~ NA_real_,
+    TRUE ~ (5 - pes19_privjobs) / 4
+  ))
+```
+
+
+
+* pes19_blame: People who don’t get ahead should blame themselves, not the system.
+
+* Strongly disagree (1)
+* Somewhat disagree (2)
+* Neither agree nor disagree (3)
+* Somewhat agree (4)
+* Strongly agree (5)
+* Don't know/ Prefer not to answer (6)
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(blame = case_when(
+    pes19_blame == 6 ~ NA_real_,  
+    TRUE ~ (5 - pes19_blame) / 4  
+  ))
+```
+
+
+* pes19_deserve2: The welfare state makes people less willing to look after themselves.
+
+* Strongly disagree (1)
+* Somewhat disagree (2)
+* Neither agree nor disagree (3)
+* Somewhat agree (4)
+* Strongly agree (5)
+* Don't know/ Prefer not to answer (6)
+
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(deserve2 = case_when(
+    pes19_deserve2 == 6 ~ NA_real_,
+    TRUE ~ (5 - pes19_deserve2) / 4
+  ))
+```
+
+* pes19_deserve1: If people really want to work, they can find a job.		
+* Strongly disagree (1)
+* Somewhat disagree (2)
+* Neither agree nor disagree (3)
+* Somewhat agree (4)
+* Strongly agree (5)
+* Don't know/ Prefer not to answer (6)
+
+```{r}
+ces2019 <- ces2019 %>%
+  mutate(deserve1 = case_when(
+    pes19_deserve1 == 6 ~ NA_real_, 
+    TRUE ~ (5 - pes19_deserve1) / 4  
+  ))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(gap = NA,
+           gap = ifelse(pes19_gap == 1, 0, gap),
+           gap = ifelse(pes19_gap == 2, 0.25, gap),
+           gap = ifelse(pes19_gap == 3, 0.5, gap),
+           gap = ifelse(pes19_gap == 4, 0.75, gap),
+           gap = ifelse(pes19_gap == 5, 1, gap))
+```
+
+
+
+
+## anti-immigration index
+
+```{r}
+ces2019 <- ces2019 %>%
+   mutate(culture_harm = ifelse(pes19_nativism4 == 1, 0, NA), 
+          culture_harm = ifelse(pes19_nativism4 == 2, 0.25, culture_harm),
+          culture_harm = ifelse(pes19_nativism4 == 3, 0.50, culture_harm), 
+          culture_harm = ifelse(pes19_nativism4 == 4, 0.75, culture_harm), 
+          culture_harm = ifelse(pes19_nativism4 == 5, 1, culture_harm)) 
+
+ces2019 <- ces2019 %>%
+   mutate(imm_crim = ifelse(pes19_nativism5 == 1, 0, NA), 
+          imm_crim = ifelse(pes19_nativism5 == 2, 0.25, imm_crim),
+          imm_crim = ifelse(pes19_nativism5 == 3, 0.50, imm_crim), 
+          imm_crim = ifelse(pes19_nativism5 == 4, 0.75, imm_crim), 
+          imm_crim = ifelse(pes19_nativism5 == 5, 1, imm_crim)) 
+
+ces2019 <- ces2019 %>%
+   mutate(spend_imm_min = ifelse(cps19_spend_imm_min == 1, 1, NA), 
+          spend_imm_min = ifelse(cps19_spend_imm_min == 2, 0.5, spend_imm_min),
+          spend_imm_min = ifelse(cps19_spend_imm_min == 3, 0, spend_imm_min), 
+          spend_imm_min = ifelse(cps19_spend_imm_min == 4, NA, spend_imm_min))
+
+
+ces2019 <- ces2019 %>%
+   mutate(admit_imm = ifelse(cps19_imm == 1, 0, NA), 
+          admit_imm = ifelse(cps19_imm == 2, 1, admit_imm),
+          admit_imm = ifelse(cps19_imm == 3, 0.5, admit_imm), 
+          admit_imm = ifelse(cps19_imm == 4, NA, admit_imm))
+
+ces2019 <- ces2019 %>%
+    mutate(immig = (culture_harm + imm_crim + spend_imm_min + admit_imm) / 4)
+```
+
+
+## Vote Choice
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(vote_2019 = pes19_votechoice2019,
+           vote_2019 = ifelse(is.na(vote_2019), cps19_v_advance, vote_2019))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(pes19_turnout2019 = ifelse(is.na(pes19_turnout2019), pes19_turnout2019_v2, pes19_turnout2019))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(vote_2019 = ifelse(pes19_turnout2019 > 1, 96, vote_2019)) %>%
+    filter(pes19_turnout2019 != 3) %>%
+    filter(pes19_turnout2019 != 8)
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(votePLC_19 = ifelse(vote_2019 == 1, 1, 0),
+           voteCONS_19 = ifelse(vote_2019 == 2, 1, 0),
+           voteNDP_19 = ifelse(vote_2019 == 3, 1, 0),
+           voteBLOC_19  = ifelse(vote_2019 == 4, 1, 0))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(vote_19_factor = NA,
+           vote_19_factor = ifelse(vote_2019 == 1, "Liberal", vote_19_factor),
+           vote_19_factor = ifelse(vote_2019 == 2, "Conservative", vote_19_factor),
+           vote_19_factor = ifelse(vote_2019 == 3, "NDP", vote_19_factor),
+           vote_19_factor = ifelse(vote_2019 == 4, "Bloc Quebecois", vote_19_factor),
+           vote_19_factor = ifelse(vote_2019 == 5, "Green Party", vote_19_factor),
+           vote_19_factor = ifelse(vote_2019 == 6, "People's Party", vote_19_factor),
+#           vote_19_factor = ifelse(vote_2019 == 96, "Abstainer/DK", vote_19_factor),
+           vote_19_factor = ifelse(vote_2019 == 96, NA, vote_19_factor))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(vote_19_factor_abst = NA,
+           vote_19_factor_abst = ifelse(vote_2019 == 1, "Liberal", vote_19_factor_abst),
+           vote_19_factor_abst = ifelse(vote_2019 == 2, "Conservative", vote_19_factor_abst),
+           vote_19_factor_abst = ifelse(vote_2019 == 3, "NDP", vote_19_factor_abst),
+           vote_19_factor_abst = ifelse(vote_2019 == 4, "Bloc Quebecois", vote_19_factor_abst),
+           vote_19_factor_abst = ifelse(vote_2019 == 5, "Green Party", vote_19_factor_abst),
+           vote_19_factor_abst = ifelse(vote_2019 == 6, "People's Party", vote_19_factor_abst),
+           vote_19_factor_abst = ifelse(vote_2019 == 96, "Abstainer/DK", vote_19_factor_abst))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(right_bloc = ifelse(vote_19_factor == "Conservative" | vote_19_factor == "People's Party", 1, 0),
+           right_bloc = ifelse(vote_19_factor == "Abstainer/DK", NA, right_bloc))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(left_bloc = ifelse(vote_19_factor == "Green Party" | vote_19_factor == "Liberal" | vote_19_factor == "NDP", 1, 0),
+           left_bloc = ifelse(vote_19_factor == "Abstainer/DK", NA, left_bloc))
+```
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(left_bloc_abst = ifelse(vote_19_factor_abst == "Green Party" | vote_19_factor_abst == "Liberal" | vote_19_factor_abst == "NDP", 1, 0),
+           left_bloc_abst = ifelse(vote_19_factor_abst == "Abstainer/DK", NA, left_bloc_abst))
+
+ces2019 <- ces2019 %>%
+    mutate(right_bloc_abst = ifelse(vote_19_factor_abst == "Conservative" | vote_19_factor_abst == "People's Party", 1, 0),
+           right_bloc_abst = ifelse(vote_19_factor_abst == "Abstainer/DK", NA, right_bloc_abst))
+```
+
+
+
+
+
+
+## Post-transformation fine-tuning
+
+```{r}
+ces2019 <- ces2019 %>%
+    mutate(weights = cps19_weight_general_all) %>%
+    mutate(weights1 = pes19_weight_general_all) %>%
+    mutate(weights2 = cps19_weight_general_restricted) %>%
+    mutate(weights3 = pes19_weight_general_restricted) %>%
+    mutate(region = factor(region))
+```
+
+```{r}
+ces2019$education <- factor(ces2019$education, levels = c("No Schooling/Completed High School", "Some CEGEP/Post-Secondary", "Completed CEGEP/Post-Secondary", "Some University", "Bachelor's Degree", "Master's Degree/Doctorate"))
+
+ces2019 <- ces2019 %>%
+    mutate(religious_freq = factor(religious_freq, levels = c("Never/Almost never", "Once a month or more")))
+```
+
+
+```{r}
+# generate index
+ces2019 <- ces2019 %>%
+  mutate(welfare_state = (stdofliving + inequal + govt_act_ineq) / 3,
+         deservingness = (deserve1 + deserve2 + blame) / 3)
+
+ces2019 <- ces2019 %>%
+    filter(!is.na(welfare_state) & !is.na(deservingness))
+```
+
+
+## Assessing Robustness
+
+```{r}
+# alpha for both indexes
+
+welfare_state_items <- ces2019[, c("stdofliving", "inequal", "govt_act_ineq")]
+welfare_state_items <- welfare_state_items %>% na.omit()
+
+alpha(welfare_state_items)
+
+deservingness_items <- ces2019[, c("deserve1", "deserve2", "blame")]
+deservingness_items <- deservingness_items %>% na.omit()
+
+alpha(deservingness_items)
+```
+
+### Assessing the robustness of the anti-immigrant/nativism index
+
+```{r}
+immig_data <- ces2019 %>%
+  select(culture_harm, imm_crim, spend_imm_min, admit_imm)
+
+# Calculate Cronbach's alpha
+cronbach_alpha <- alpha(immig_data)
+
+# Display the result
+print(cronbach_alpha)
+
+df_transformed <- ces2019 %>%
+  dplyr::select("blame", "deserve1", "deserve2", "stdofliving", "inequal", "govt_act_ineq") %>% na.omit()
+
+ fa_result <- principal(df_transformed, nfactors=2, rotate="varimax")
+ 
+ # View the results
+print(fa_result)
+ 
+ # Extract the factor loadings
+factor_loadings <- fa_result$loadings
+```
+
+
+```{r}
+ fa_result <- principal(df_transformed, nfactors=2, rotate="varimax")
+ 
+ # View the results
+print(fa_result)
+ 
+ # Extract the factor loadings
+factor_loadings <- fa_result$loadings
+```
+
+
+```{r}
+
+# Convert the loadings to a matrix and then to a dataframe
+loadings_matrix <- matrix(unlist(fa_result$loadings), ncol = 2)
+rownames(loadings_matrix) <- rownames(fa_result$loadings)
+loadings_df <- as.data.frame(loadings_matrix)
+loadings_df$Variable <- rownames(loadings_df)
+loadings_df <- melt(loadings_df, id.vars = "Variable", variable.name = "Factor", value.name = "Loading")
+```
+
+```{r}
+# Create a named vector for descriptive variable labels
+variable_labels <- c(inequal = "Income Inequality Problem",
+                     deserve1 = "Job Availability Belief",
+                     deserve2 = "Welfare State Dependency",
+                     stdofliving = "Government Role in Standard of Living",
+                     govt_act_ineq = "Government Action on Income Inequality",
+                     blame = "Self-Blame for Not Getting Ahead")
+
+# Update loadings_df with descriptive variable names
+loadings_df$Variable <- factor(loadings_df$Variable, levels = names(variable_labels), labels = variable_labels)
+
+# Update factor names to be more descriptive
+factor_names <- c("V1" = "Deservingness", "V2" = "Welfare State")
+loadings_df$Factor <- factor(loadings_df$Factor, levels = names(factor_names), labels = factor_names)
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Define the desired order of variables
+desired_order <- c(
+  "Government Action on Income Inequality",
+  "Income Inequality Problem",
+  "Government Role in Standard of Living",
+  "Self-Blame for Not Getting Ahead",
+  "Welfare State Dependency",
+  "Job Availability Belief"
+)
+
+# Set the Variable column to a factor with the desired order
+loadings_df <- loadings_df %>%
+  mutate(Variable = factor(Variable, levels = desired_order))
+
+# Plot with the specified order of variables
+ggplot(loadings_df, aes(x = Variable, y = Loading, fill = Factor)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  coord_flip() +
+  labs(x = "Attitudes Toward Redistribution", y = "Factor Loading") +
+  scale_fill_manual(values = c("Welfare State" = "#088ec8", "Deservingness" = "#0d940d")) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom", # Remove the legend title
+    axis.title.x = element_text(face = "bold"), # Bold X axis title
+    axis.title.y = element_text(face = "bold") # Bold Y axis title
+  )
+
+# Save the plot
+ggsave("factor_loadings_plot.png", width = 10, height = 5, dpi = 300)
+
+
+```
+
+
+```{r}
+ggplot(loadings_df, aes(x = Variable, y = Loading, fill = Factor)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  coord_flip() +
+  labs(x = "Attitudes Toward Redistribution", y = "Factor Loading") +
+  scale_fill_manual(values = c("Welfare State" = "#088ec8", "Deservingness" = "#0d940d")) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom", # Remove the legend title
+    axis.title.x = element_text(face = "bold"), # Bold X axis title
+    axis.title.y = element_text(face = "bold") # Bold Y axis title
+  )
+
+# Save the plot
+ggsave("factor_loadings_plot.png", width = 10, height = 5, dpi = 300)
+
+
+```
+
+```{r}
+loadings_df <- loadings_df %>%
+  spread(key = Factor, value = Loading)
+```
+
+
+```{r}
+loadings_df <- loadings_df %>%
+  mutate(HighestLoading = ifelse(`Welfare State` > `Deservingness`, "Welfare State", "Deservingness")) %>%
+  gather(key = "Factor", value = "Loading", -Variable, -HighestLoading)
+```
+
+
+```{r}
+loadings_df$ColorFill <- ifelse(loadings_df$Factor == loadings_df$HighestLoading, loadings_df$Factor, "Other")
+
+library(ggplot2)
+
+library(ggplot2)
+
+ggplot(loadings_df, aes(x = Variable, y = Loading, fill = ColorFill)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  scale_fill_manual(values = c("Welfare State" = "#088ec8", 
+                               "Deservingness" = "#0d940d", 
+                               "Other" = "grey"),
+                    breaks = c("Welfare State", "Deservingness")) + # Specify legend items
+  coord_flip() +
+  labs(x = "Attitudes Toward Redistribution", y = "Factor Loading") +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold")
+  )
+
+ggsave("factor_loadings_plot_precise.png", width = 10, height = 5, dpi = 300)
+```
+
+
+
+
+```{r}
+df <- ces2019 %>%
+    dplyr::select(c(vote_19_factor, vote_19_factor_abst, right_bloc, left_bloc, right_bloc_abst, left_bloc_abst, education, agegroup, gender, religious_freq, language, minovis, urban_rural, deservingness, welfare_state, weights, weights1, weights2, weights3, region, immig))
+```
+
+
+```{r}
+# generate dichotomous variable for each party
+df <- df %>%
+    mutate(bloc = ifelse(vote_19_factor == "Bloc Quebecois", 1, 0),
+           conservative = ifelse(vote_19_factor == "Conservative", 1, 0),
+           green = ifelse(vote_19_factor == "Green Party", 1, 0),
+           liberal = ifelse(vote_19_factor == "Liberal", 1, 0),
+           ndp = ifelse(vote_19_factor == "NDP", 1, 0),
+           people_party = ifelse(vote_19_factor == "People's Party", 1, 0))
+```
+
+```{r}
+# generate dichotomous variable for each party
+df <- df %>%
+    mutate(bloc_abst = ifelse(vote_19_factor_abst == "Bloc Quebecois", 1, 0),
+           conservative_abst = ifelse(vote_19_factor_abst == "Conservative", 1, 0),
+           green_abst = ifelse(vote_19_factor_abst == "Green Party", 1, 0),
+           liberal_abst = ifelse(vote_19_factor_abst == "Liberal", 1, 0),
+           ndp_abst = ifelse(vote_19_factor_abst == "NDP", 1, 0),
+           people_party_abst = ifelse(vote_19_factor_abst == "People's Party", 1, 0),
+           abst = ifelse(vote_19_factor_abst == "Abstainer/DK", 1, 0))
+```
+
+
+## Descriptive Table
+
+```{r}
+df <- df %>%
+    mutate(gender = ifelse(gender == 1, "Woman", "Man"),
+           minovis = ifelse(minovis == 1, "Visible Minority", "Other"))
+
+datasummary(vote_19_factor + education + agegroup +  gender +  religious_freq + minovis + language + urban_rural + region  ~ mean + Percent() + N, data = df, output = "descriptive_table.docx")
+
+save(df, file = "ces2019_analyses.RData")
+```
+
+
+
+```{r}
+# subset for STATA analysis
+df <- ces2019 %>%
+    filter(!is.na(vote_19_factor_abst) & !is.na(education) & !is.na(agegroup) & !is.na(gender) & !is.na(religious_freq) & !is.na(language) & !is.na(minovis) & !is.na(urban_rural) & !is.na(deservingness) & !is.na(welfare_state))
+
+write_dta(df, "ces2019_analyses.dta")
+```
+

@@ -1,0 +1,377 @@
+---
+title: "Analyses in R"
+author: "Thomas Gareau-Paquette"
+date: "2024-06-14"
+output: html_document
+---
+
+```{r}
+library(haven)
+library(tidyverse)
+library(ggplot2)
+library(ggtext)
+library(plotly)
+library(labelled)
+library(survey)
+library(scales)
+library(fixest)
+library(broom)
+library(GGally)
+library(readxl)
+library(viridis)
+library(ggrepel)
+library(modelsummary)
+library(kableExtra)
+library(summarytools)
+library(psych)
+library(reshape2)
+```
+
+```{r}
+load("ces2019_analyses.RData")
+```
+
+```{r}
+ces2019 <- df
+```
+
+
+* pes19_inequal: Is income inequality a big problem in Canada?
+* pes19_deserve1: If people really want to work, they can find a job.
+* pes19_deserve2: The welfare state makes people less willing to look after themselves.
+* pes19_stdofliving: The government should:
+* pes19_govt_act_ineq: The government should take measures to reduce differences in income levels.	
+* pes19_blame: People who don’t get ahead should blame themselves, not the system.
+
+
+```{r}
+means_welfare_deservignness <- ces2019 %>%
+    group_by(education) %>%
+    summarise(mean_welfare_state = weighted.mean(welfare_state, na.rm = TRUE, weights1),
+              mean_deservingness = weighted.mean(deservingness, na.rm = TRUE, weights1))
+```
+
+
+```{r}
+library(survey)
+
+ces2019 <- ces2019[!is.na(ces2019$weights1), ]
+ces2019$education <- iconv(ces2019$education, to = "UTF-8")
+
+
+ces2019_design <- svydesign(ids = ~1, data = ces2019, weights = ~weights1)
+
+means_deservignness <- svyby(~deservingness, ~education, ces2019_design, svymean, na.rm = TRUE, vartype = "ci")
+means_welfare <- svyby(~welfare_state, ~education, ces2019_design, svymean, na.rm = TRUE, vartype = "ci")
+```
+
+```{r}
+means_deservignness <- means_deservignness %>%
+    mutate(type = "Deservingness") %>%
+    rename(weighted_mean = deservingness)
+
+
+means_welfare <- means_welfare %>%
+    mutate(type = "Welfare State") %>%
+    rename(weighted_mean = welfare_state)
+
+weighted_means <- rbind(means_deservignness, means_welfare)
+```
+
+
+```{r}
+dodge_width <- position_dodge(width = 0.9) # Adjust the width as needed for your plot
+library(ggplot2)
+
+# Define the logical order for education levels
+education_order <- c("No Schooling/Completed High School", "Some CEGEP/Post-Secondary", "Completed CEGEP/Post-Secondary", "Some University", "Bachelor's Degree", "Master's Degree/Doctorate")
+
+
+
+# Convert 'education' to a factor with levels in the desired order
+weighted_means$education <- factor(weighted_means$education, levels = education_order)
+
+# Adjusted plot code with ordered education levels
+ggplot(weighted_means, aes(x = education, y = weighted_mean, fill = type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7)) +
+  geom_errorbar(aes(ymin = ci_l, ymax = ci_u), width = 0.2, position = position_dodge(width = 0.7)) +
+  labs(x = "Education Level", y = "Weighted Mean", fill = "Dimension") +
+  scale_fill_manual(values = c("Welfare State" = "#088ec8", "Deservingness" = "#0d940d")) +
+  theme_bw(base_size = 14) +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold")
+  ) + 
+  coord_flip() # Flip coordinates for a horizontal layout
+
+# Save the plot
+ggsave("weighted_mean_ordered.png", width = 10, height = 5, dpi = 300)
+```
+
+```{r}
+weighted_means_new <- cbind(means_deservignness, means_welfare)
+```
+
+```{r}
+# Assuming means_deservignness and means_welfare are the data frames you are binding
+# Rename columns to make them unique right after cbind
+colnames(weighted_means_new) <- c("education1", "weighted_mean1", "ci_l1", "ci_u1", "type1",
+                                  "education2", "weighted_mean2", "ci_l2", "ci_u2", "type2")
+
+# Now you can rename the specific columns as you intended
+weighted_means_new <- weighted_means_new %>%
+  rename(welfare_state = weighted_mean2,  # Assuming the welfare state mean is in the second data frame
+         deservingness = weighted_mean1)  # And deservingness mean is in the first
+
+# Now your data frame should have the columns renamed as intended
+
+```
+
+
+```{r}
+weighted_means_new <- weighted_means_new %>%
+    mutate(diff = welfare_state - deservingness)
+```
+
+
+
+```{r}
+# Calculate overall means for deservingness and welfare state
+overall_mean_deservingness <- svymean(~deservingness, ces2019_design, na.rm = TRUE)
+overall_mean_welfare <- svymean(~welfare_state, ces2019_design, na.rm = TRUE)
+
+# Extract the overall means
+overall_mean_deservingness <- coef(overall_mean_deservingness)
+overall_mean_welfare <- coef(overall_mean_welfare)
+```
+
+
+```{r}
+# Adjust group means by subtracting overall means
+means_deservignness <- means_deservignness %>%
+  mutate(weighted_mean = weighted_mean - overall_mean_deservingness)
+```
+
+
+```{r}
+means_welfare <- means_welfare %>%
+  mutate(weighted_mean = weighted_mean - overall_mean_welfare)
+```
+
+
+```{r}
+# Combine adjusted means
+weighted_means <- rbind(means_deservignness, means_welfare)
+
+# Define the logical order for education levels
+education_order <- c("No Schooling/Completed High School", "Some CEGEP/Post-Secondary", "Completed CEGEP/Post-Secondary", "Some University", "Bachelor's Degree", "Master's Degree/Doctorate")
+
+# Convert 'education' to a factor with levels in the desired order
+weighted_means$education <- factor(weighted_means$education, levels = education_order)
+
+# Plotting
+ggplot(weighted_means, aes(x = education, y = weighted_mean, fill = type)) +
+  geom_bar(stat = "identity", position = dodge_width) +
+  labs(x = "Education Level", y = "Weighted Mean Relative to Overall Mean", fill = "Dimension") +
+  scale_fill_manual(values = c("Welfare State" = "#088ec8", "Deservingness" = "#0d940d")) +
+  theme_bw(base_size = 14) +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold")) + coord_flip()
+
+# Save the plot
+ggsave("adjusted_weighted_mean_ordered.png", width = 10, height = 5, dpi = 300)
+```
+
+
+
+
+```{r}
+library(ggplot2)
+
+# Assuming 'education_data' has columns 'education' and 'frequency'
+# Define the logical order for education levels
+education_order <- c("No Schooling/Completed High School", "Some CEGEP/Post-Secondary", "Completed CEGEP/Post-Secondary", "Some University", "Bachelor's Degree", "Master's Degree/Doctorate")
+
+
+
+# Define the logical order for education levels
+
+# Counting the frequencies
+education_data <- ces2019 %>%
+  group_by(education = factor(education, levels = education_order)) %>%
+  summarise(frequency = n(), .groups = 'drop')
+
+# Plotting the frequencies of education levels
+ggplot(education_data, aes(x = education, y = frequency, fill = education)) +
+  geom_col() + # geom_col is equivalent to geom_bar(stat = "identity")
+  labs(x = "Education Level", y = "Frequency") +
+  scale_fill_brewer(palette = "Spectral") +
+  theme_bw(base_size = 14) +
+  theme(legend.title = element_blank(),
+        legend.position = "none", # Hiding legend as it's redundant
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold")) +
+  coord_flip() # Flip coordinates for a horizontal layout
+
+ggsave("education_frequencies.png", width = 10, height = 5, dpi = 300)
+```
+
+
+
+
+```{r}
+# Define the logical order for education levels
+education_order <- c("No Schooling/Completed High School", "Some CEGEP/Post-Secondary", "Completed CEGEP/Post-Secondary", "Some University", "Bachelor's Degree", "Master's Degree/Doctorate")
+
+
+
+# Convert 'education' to a factor with levels in the desired order for the entire dataset
+ces2019$education <- factor(ces2019$education, levels = education_order)
+```
+
+
+
+## Regressions
+
+```{r}
+reg1 = feols(welfare_state ~ education + agegroup + gender + religious_freq + language + minovis + urban_rural | region, vcov = "Cluster", weights = ces2019$weights1, data = ces2019)
+
+modelsummary(reg1, stars = TRUE, output = "reg_welfare.docx")
+```
+
+```{r}
+summary(reg1)
+```
+
+
+
+```{r}
+# Assuming reg2 is your model object from feols
+# First, tidy the model to get a nice dataframe
+tidy_reg1 <- tidy(reg1, conf.int = TRUE)
+```
+
+
+```{r}
+# Assuming tidy_reg1 is already created and contains the necessary columns
+# Update the mapping of original terms to more descriptive labels based on your new regression output
+labels_map <- c(
+  "educationSome CEGEP/Post-Secondary" = "Some CEGEP/Post-Secondary",
+  "educationCompleted CEGEP/Post-Secondary" = "Completed CEGEP/Post-Secondary",
+  "educationSome University" = "Some University", # Assuming this label is more accurate
+  "educationBachelor's Degree" = "Bachelor's Degree", # Assuming this label is more accurate
+  "educationMaster's Degree/Doctorate" = "Master's Degree/Doctorate",
+  "agegroup36-45" = "Age 36-45",
+  "agegroup46-55" = "Age 46-55",
+  "agegroup56-65" = "Age 56-65",
+  "agegroup66 +" = "Age 66+",
+  "gender" = "Woman",
+  "religious_freqOnce a month or more" = "Religious Frequency ≥ Monthly",
+  "languageFrench" = "French as Mother Tongue",
+  "languageOther" = "Other Mother Tongue",
+  "minovis" = "Racial Minority",
+  "urban_ruralA small town (more than 1000 people but less than 15K)" = "Small Town",
+  "urban_ruralA middle-sized town (15K-50K people) not attached to a city" = "Middle-sized Town",
+  "urban_ruralA suburb of a large town or city" = "Suburb",
+  "urban_ruralA large town or city (more than 50K people)" = "Large Town/City"
+)
+
+
+# Assuming tidy_reg1 contains 'term' and 'estimate' columns
+# Map the 'term' column to more descriptive labels
+tidy_reg1$label <- labels_map[as.character(tidy_reg1$term)]
+
+# Convert 'label' to a factor for ordered plotting
+tidy_reg1$label <- factor(tidy_reg1$label, levels = labels_map[names(labels_map)])
+tidy_reg1$label <- factor(tidy_reg1$label, levels = rev(levels(tidy_reg1$label)))
+# Plotting
+ggplot(tidy_reg1, aes(x = label, y = estimate, color = term)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = estimate - 1.96 * std.error, ymax = estimate + 1.96 * std.error), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(x = " ", y = "Coefficients", color = "Variable") +
+  scale_color_manual(values = rep("black", length(labels_map))) + # Optional: Adjust color scale if needed
+ theme_minimal(base_size = 14) +
+    theme(legend.position = "none")
+
+ggsave("reg1_plot.png", width = 9, height = 6, dpi = 300)
+
+```
+
+
+
+```{r}
+reg2 = feols(deservingness ~ education + agegroup + gender + religious_freq + language + minovis + urban_rural | region, vcov = "Cluster", weights = ces2019$weights1, data = ces2019)
+
+modelsummary(reg2, stars = TRUE, output = "reg_deserv.docx")
+```
+
+```{r}
+library(fixest)
+library(tidyverse)
+library(broom)
+
+tidy_reg2 <- tidy(reg2, conf.int = TRUE)
+
+labels_map <- c(
+  "educationSome CEGEP/Post-Secondary" = "Some CEGEP/Post-Secondary",
+  "educationCompleted CEGEP/Post-Secondary" = "Completed CEGEP/Post-Secondary",
+  "educationSome University" = "Some University", # Assuming this label is more accurate
+  "educationBachelor's Degree" = "Bachelor's Degree", # Assuming this label is more accurate
+  "educationMaster's Degree/Doctorate" = "Master's Degree/Doctorate",
+  "agegroup36-45" = "Age 36-45",
+  "agegroup46-55" = "Age 46-55",
+  "agegroup56-65" = "Age 56-65",
+  "agegroup66 +" = "Age 66+",
+  "gender" = "Woman",
+  "religious_freqOnce a month or more" = "Religious Frequency ≥ Monthly",
+  "languageFrench" = "French as Mother Tongue",
+  "languageOther" = "Other Mother Tongue",
+  "minovis" = "Racial Minority",
+  "urban_ruralA small town (more than 1000 people but less than 15K)" = "Small Town",
+  "urban_ruralA middle-sized town (15K-50K people) not attached to a city" = "Middle-sized Town",
+  "urban_ruralA suburb of a large town or city" = "Suburb",
+  "urban_ruralA large town or city (more than 50K people)" = "Large Town/City"
+)
+
+
+# Map the original terms to the descriptive labels
+tidy_reg2$term <- factor(tidy_reg2$term, levels = names(labels_map))
+tidy_reg2$label <- labels_map[tidy_reg2$term]
+
+# Ensure the factor levels are in the original order
+tidy_reg2$label <- factor(tidy_reg2$label, levels = labels_map[names(labels_map)])
+
+tidy_reg2$label <- factor(tidy_reg2$label, levels = rev(levels(tidy_reg2$label)))
+
+# Plot with ggplot2 using the updated, ordered labels
+ggplot(tidy_reg2, aes(x = label, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(x = " ", y = "Coefficients") +
+  theme_minimal(base_size = 14)
+
+ggsave("reg2_plot.png", width = 9, height = 6, dpi = 300)
+```
+
+
+
+
+```{r}
+df <- ces2019 %>%
+    filter(!is.na(vote_19_factor_abst) & !is.na(education) & !is.na(agegroup) & !is.na(gender) & !is.na(religious_freq) & !is.na(language) & !is.na(minovis) & !is.na(urban_rural) & !is.na(deservingness) & !is.na(welfare_state))
+```
+
+
+
+```{r}
+#reg1 <- glm(deservingness ~ education, family = "binomial", data = df)
+#
+#reg2 <- glm(right_bloc ~ education + agegroup + gender + religious_freq + language + minovis + #urban_rural + deservingness + welfare_state, family = "binomial", data = df)
+```
